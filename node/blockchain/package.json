@@ -1,0 +1,14 @@
+{
+    "devDependencies": {
+        "@types/node": "^18.11.0",
+        "typescript": "^4.8.4"
+    },
+    "scripts": {
+        "build": "tsc"
+    },
+    "dependencies": {
+        "@types/ws": "^8.5.3",
+        "ip-cidr": "^3.0.10",
+        "ws": "^8.9.0"
+    }
+}
