@@ -15,6 +15,12 @@ import { Evaluator } from 'node-seal/implementation/evaluator';
 let goal = 100;
 let current = 0;
 
+let enc:  {
+    context: Context;
+    encoder: BatchEncoder;
+    evaluator: Evaluator;
+} | undefined = undefined;
+
 let name = '';
 
 export default async function main() {
@@ -24,7 +30,10 @@ export default async function main() {
     // ---- Homomorphic Encryption Setup
     // See: https://github.com/morfix-io/node-seal/blob/main/USAGE.md
     const seal = await SEAL()
-    const enc = setupHomomorphicEncryption(seal);
+    enc = setupHomomorphicEncryption(seal);
+    if (!enc) {
+        throw new Error('Failed to setup encryption!');
+    }
     const { context, } = enc;
     // -----------------------------
     
@@ -49,21 +58,27 @@ export default async function main() {
     console.log(`I am ${name}!`);
 }
 
-async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary, enc: { context: Context; encoder: BatchEncoder; evaluator: Evaluator; }) {
+async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary, enc: { context: Context; encoder: BatchEncoder; evaluator: Evaluator; } | undefined) {
     //// Send a number between 0 and 20, 
     //// representing a piece of the Federated machine learning model solved by a node.
-    // peer.send();
+
+    if (!enc) {
+        throw new Error('Homomorphic encryption not setup!');
+    }
+
+    const generatePayload = () => {
+        const list: number[] = [];
+        for (let i = 0; i < 10; i++) {
+            list.push(Math.floor(Math.random() * 20));
+        }
+        return list;
+    }
     
     const encodedPlaintext = seal.PlainText({ capacity: 10, coeffCount: 10});
-    enc.encoder.encode(Uint32Array.from([1]), encodedPlaintext);
+    enc.encoder.encode(Uint32Array.from(generatePayload()), encodedPlaintext);
 
     const encodedPlaintextString = encodedPlaintext.save();
-    console.log(encodedPlaintextString)
-
-    const decodedPlaintext = enc.encoder.decode(encodedPlaintext).slice(0, 10);
-    const decodedPlaintextString = decodedPlaintext.toString();
-    console.log('decoded: ', decodedPlaintext)
-    console.log('decoded_string: ', decodedPlaintextString)
+    peer.send(encodedPlaintextString);
 
 }
 
@@ -140,26 +155,25 @@ function generateKeys (seal: SEALLibrary, context: Context) {
     console.log('Public Key: \n', publicBase64Key);
 }
 
-
 function setupListener() {
     const wss = new WebSocketServer({ port: 8080 });
 
     wss.on('connection', function connection(ws) {
         ws.on('message', function message(data) {
-            const puzzlePiece = Number.parseInt(data.toString())
-            if (!isNaN(puzzlePiece)) {
-                console.log(`recv: ${puzzlePiece}`);
-                current += puzzlePiece;
+
+            if (!enc) {
+                throw new Error('Homomorphic encryption not setup!');
             }
-            if (current >= goal) {
-                console.log(`I am '${name}' and I have solved the puzzle!`);
-            }
+
+
+            const decodedPlaintext = enc.encoder.decode(data).slice(0, 10);
+            const decodedPlaintextString = decodedPlaintext.toString();
+            console.log('decoded: ', decodedPlaintext);
+            console.log('decoded_string: ', decodedPlaintextString);
         });
     });
 
     return wss;
 }
-
-
 
 main();
