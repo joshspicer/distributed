@@ -8,6 +8,8 @@ import { secretBase64Key } from './secret';
 import { PlainText } from 'node-seal/implementation/plain-text';
 import { BatchEncoder } from 'node-seal/implementation/batch-encoder';
 import { Evaluator } from 'node-seal/implementation/evaluator';
+import { Encryptor } from 'node-seal/implementation/encryptor';
+import { Decryptor } from 'node-seal/implementation/decryptor';
 // import { secretBase64Key } from './secret';
 // import { secretKeyBase64Encoded } from './secret';
 
@@ -19,8 +21,11 @@ let enc:  {
     context: Context;
     encoder: BatchEncoder;
     evaluator: Evaluator;
+    encryptor: Encryptor;
+    decryptor: Decryptor;
 } | undefined = undefined;
 
+let seal: SEALLibrary | undefined = undefined;
 let name = '';
 
 export default async function main() {
@@ -29,9 +34,9 @@ export default async function main() {
 
     // ---- Homomorphic Encryption Setup
     // See: https://github.com/morfix-io/node-seal/blob/main/USAGE.md
-    const seal = await SEAL()
+    seal = await SEAL()
     enc = setupHomomorphicEncryption(seal);
-    if (!enc) {
+    if (!enc || !seal) {
         throw new Error('Failed to setup encryption!');
     }
     const { context, } = enc;
@@ -47,7 +52,7 @@ export default async function main() {
 
     const peer = new WebSocket(`ws://${process.env.PEER}:8080`, { 'timeout': 5000 });
     peer.onopen = () => {
-        peer.send('Hello from ' + name);
+        // peer.send('Hello from ' + name);
 
         // Randomly send a message to the peer
         setInterval(async () => {
@@ -58,11 +63,11 @@ export default async function main() {
     console.log(`I am ${name}!`);
 }
 
-async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary, enc: { context: Context; encoder: BatchEncoder; evaluator: Evaluator; } | undefined) {
+async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary | undefined, enc: { context: Context; encoder: BatchEncoder; evaluator: Evaluator; encryptor: Encryptor; decryptor: Decryptor} | undefined) {
     //// Send a number between 0 and 20, 
     //// representing a piece of the Federated machine learning model solved by a node.
 
-    if (!enc) {
+    if (!enc || !seal) {
         throw new Error('Homomorphic encryption not setup!');
     }
 
@@ -71,15 +76,21 @@ async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary, enc:
         for (let i = 0; i < 10; i++) {
             list.push(Math.floor(Math.random() * 20));
         }
+        console.log('Generated Payload: ', list.slice(0, 5));
         return list;
     }
     
-    const encodedPlaintext = seal.PlainText({ capacity: 10, coeffCount: 10});
+    const encodedPlaintext = seal.PlainText();
     enc.encoder.encode(Uint32Array.from(generatePayload()), encodedPlaintext);
+    const cipherText = enc.encryptor.encrypt(encodedPlaintext)
 
-    const encodedPlaintextString = encodedPlaintext.save();
-    peer.send(encodedPlaintextString);
+   if (!cipherText) {
+         throw new Error('Failed to encrypt!');
+   }
 
+    const cipherTextString = cipherText.save();
+    // SEND TO PEER
+    peer.send(cipherTextString);
 }
 
 function setupHomomorphicEncryption(seal: SEALLibrary) {   
@@ -125,13 +136,18 @@ function setupHomomorphicEncryption(seal: SEALLibrary) {
     UploadedSecretKey.load(context, secretBase64Key)
     // Create a new KeyGenerator (use uploaded secretKey)
     const keyGenerator = seal.KeyGenerator(context, UploadedSecretKey)
+    const publicKey = keyGenerator.createPublicKey()
+
 
     const encoder = seal.BatchEncoder(context)
     const evaluator = seal.Evaluator(context)
 
+    const encryptor = seal.Encryptor(context, publicKey)
+    const decryptor = seal.Decryptor(context, UploadedSecretKey)
+
     // generateKeys(seal, context);
 
-    return { context, encoder, evaluator };
+    return { context, encoder, evaluator, encryptor, decryptor };
 }
 
 // function string2array(s: string) {
@@ -147,12 +163,12 @@ function generateKeys (seal: SEALLibrary, context: Context) {
 
     fs.writeFileSync('secret', secretBase64Key);
 
-    console.log('Secret Key: \n', secretBase64Key);
-    console.log('\n\n');
+    // console.log('Secret Key: \n', secretBase64Key);
+    // console.log('\n\n');
 
     const publicBase64Key = publicKey.save()
 
-    console.log('Public Key: \n', publicBase64Key);
+    // console.log('Public Key: \n', publicBase64Key);
 }
 
 function setupListener() {
@@ -161,15 +177,24 @@ function setupListener() {
     wss.on('connection', function connection(ws) {
         ws.on('message', function message(data) {
 
-            if (!enc) {
+            if (!enc || !seal) {
                 throw new Error('Homomorphic encryption not setup!');
             }
 
+            console.log('---- AAA')
+            const recvCipherText = seal.CipherText();
+            recvCipherText.load(enc.context, data.toString());
 
-            const decodedPlaintext = enc.encoder.decode(data).slice(0, 10);
-            const decodedPlaintextString = decodedPlaintext.toString();
-            console.log('decoded: ', decodedPlaintext);
-            console.log('decoded_string: ', decodedPlaintextString);
+            console.log('---- BBB')
+            enc.evaluator.add(recvCipherText, recvCipherText, recvCipherText) // Add received ciphertext to itself
+
+            console.log('---- CCC')
+            const decryptedPlainText = enc.decryptor.decrypt(recvCipherText)
+            console.log('---- DDD')
+            if (decryptedPlainText) {
+                const decodedArray = enc.encoder.decode(decryptedPlainText)
+                console.log(`Decoded: ${decodedArray.slice(0, 5)}`);
+            }
         });
     });
 
