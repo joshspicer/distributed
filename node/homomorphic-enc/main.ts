@@ -10,12 +10,14 @@ import { BatchEncoder } from 'node-seal/implementation/batch-encoder';
 import { Evaluator } from 'node-seal/implementation/evaluator';
 import { Encryptor } from 'node-seal/implementation/encryptor';
 import { Decryptor } from 'node-seal/implementation/decryptor';
+import { CipherText } from 'node-seal/implementation/cipher-text';
 // import { secretBase64Key } from './secret';
 // import { secretKeyBase64Encoded } from './secret';
 
 // The target value. Represents a "completed" federated ML model
-let goal = 100;
-let current = 0;
+// The data is always stored encrypted for each node.
+let goal: number = 100;
+let current: CipherText | undefined | void = undefined; 
 
 let enc:  {
     context: Context;
@@ -30,7 +32,7 @@ let name = '';
 
 export default async function main() {
     name = process.env.NAME || 'unknown';
-
+    console.log(`I am ${name}!`);
 
     // ---- Homomorphic Encryption Setup
     // See: https://github.com/morfix-io/node-seal/blob/main/USAGE.md
@@ -45,22 +47,22 @@ export default async function main() {
     // const cidr = new IPCIDR("10.151.0.0/28"); 
     // console.log(cidr.toArray());
 
-    const listener = setupListener();
+    const _ = setupListener();
     
-    // Wait 3 seconds
+    // Wait 3 seconds for the other nodes to wake up.
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     const peer = new WebSocket(`ws://${process.env.PEER}:8080`, { 'timeout': 5000 });
+
     peer.onopen = () => {
         // peer.send('Hello from ' + name);
 
         // Randomly send a message to the peer
         setInterval(async () => {
             await doWork(peer, context, seal, enc);
-        }, 5000);
+        }, (Math.random() + 5) * 1000);
     }
 
-    console.log(`I am ${name}!`);
 }
 
 async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary | undefined, enc: { context: Context; encoder: BatchEncoder; evaluator: Evaluator; encryptor: Encryptor; decryptor: Decryptor} | undefined) {
@@ -76,7 +78,7 @@ async function doWork(peer: WebSocket, context: Context, seal: SEALLibrary | und
         for (let i = 0; i < 10; i++) {
             list.push(Math.floor(Math.random() * 20));
         }
-        console.log('Generated Payload: ', list.slice(0, 5));
+        console.log('Generated values to encrypt and send to peer: ', list.slice(0, 5));
         return list;
     }
     
@@ -154,22 +156,20 @@ function setupHomomorphicEncryption(seal: SEALLibrary) {
 //     return Uint32Array.from(s, (c) => c.codePointAt(0));
 // }
 
-function generateKeys (seal: SEALLibrary, context: Context) {
-    const keyGenerator = seal.KeyGenerator(context)
-    const secretKey = keyGenerator.secretKey()
-    const publicKey = keyGenerator.createPublicKey()
+// function generateKeys (seal: SEALLibrary, context: Context) {
+//     const keyGenerator = seal.KeyGenerator(context)
+//     const secretKey = keyGenerator.secretKey()
+//     const publicKey = keyGenerator.createPublicKey()
 
-    const secretBase64Key = secretKey.save()
+//     const secretBase64Key = secretKey.save()
 
-    fs.writeFileSync('secret', secretBase64Key);
+//     fs.writeFileSync('secret', secretBase64Key);
 
-    // console.log('Secret Key: \n', secretBase64Key);
-    // console.log('\n\n');
-
-    const publicBase64Key = publicKey.save()
-
-    // console.log('Public Key: \n', publicBase64Key);
-}
+//     // console.log('Secret Key: \n', secretBase64Key);
+//     // console.log('\n\n');
+//     const publicBase64Key = publicKey.save()
+//     // console.log('Public Key: \n', publicBase64Key);
+// }
 
 function setupListener() {
     const wss = new WebSocketServer({ port: 8080 });
@@ -181,19 +181,32 @@ function setupListener() {
                 throw new Error('Homomorphic encryption not setup!');
             }
 
-            console.log('---- AAA')
+            console.log(`Recv'd encrypted payload: ...${data.toString().slice(data.toString().length - 20)}`);
+
             const recvCipherText = seal.CipherText();
             recvCipherText.load(enc.context, data.toString());
 
-            console.log('---- BBB')
-            enc.evaluator.add(recvCipherText, recvCipherText, recvCipherText) // Add received ciphertext to itself
+            // This is the first message received from the peer
+            // Populate the 'current' CipherText object and simply exit to wait for the next message
+            if (!current) {
+                current = recvCipherText;
+                return;
+            }
 
-            console.log('---- CCC')
-            const decryptedPlainText = enc.decryptor.decrypt(recvCipherText)
-            console.log('---- DDD')
-            if (decryptedPlainText) {
-                const decodedArray = enc.encoder.decode(decryptedPlainText)
-                console.log(`Decoded: ${decodedArray.slice(0, 5)}`);
+            // Add received ciphertext to the 'current' encrypted value.
+            current = enc.evaluator.add(recvCipherText, current)
+
+            if (!current) {
+                throw new Error('Failed to add current and incoming cipherTexts!');
+            }
+
+            // -- At this point computation on the cipher text has been completed without ever decrypting it.
+
+            // Decrypt the result for demo purposes.
+            const decrypted = enc.decryptor.decrypt(current)
+            if (decrypted) {
+                const decodedArray = enc.encoder.decode(decrypted)
+                console.log(`Current state decrypted and decoded: ${decodedArray.slice(0, 5)}`);
             }
         });
     });
