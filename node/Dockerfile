@@ -1,5 +1,5 @@
 FROM mcr.microsoft.com/devcontainers/typescript-node:16
-COPY /blockchain /project
+COPY /homomorphic-enc /project
 WORKDIR /project
 RUN yarn
 RUN yarn build
